@@ -1,0 +1,302 @@
+## ============================================================
+## Pendant vs None × Left vs Right × Sex (Female + Male)
+## There is a ton of coercion in this because the female right sample size was 1 individual
+##
+## Same OUTPUT as before:
+## - 7 panels + legend panel, vertical page layout
+## - X positions kept for spacing (Female-Left, Female-Right, Male-Left, Male-Right)
+## - None vs Pendant dodged (color)
+## - NO x-axis text (no Male/Female/Side labels)
+## - KEEP y-axis ticks + numbers
+##
+## Option A for n=1 cells:
+##   - n=1 -> CrI collapses to a point (no NA posterior)
+##
+## Diagnostics included:
+##   1) bad/unrecognized Sex/Side/Group rows
+##   2) non-numeric cells (e.g., "N/A") in numeric columns
+##   3) cells with n<2
+##
+## ============================================================
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(readr)
+
+if (!requireNamespace("patchwork", quietly = TRUE)) install.packages("patchwork")
+if (!requireNamespace("forcats", quietly = TRUE)) install.packages("forcats")
+if (!requireNamespace("cowplot", quietly = TRUE)) install.packages("cowplot")
+
+library(patchwork)
+library(forcats)
+library(cowplot)
+
+## ---- BASE DIRECTORY ----
+base_dir <- "C:whatever you use"
+
+## Single input file
+in_path <- file.path(base_dir, "Humeri Pendants All.csv")
+
+## Output PNG (vertical)
+out_png <- file.path(base_dir, "Humeri_PendantVsNone_Sex_CrI_Vertical_SciAdv.png")
+
+## ============================================================
+## Read single file
+## Expected columns: Group, Side, Sex, TA, CA, MA, Ix, Iy, J, IxIy (or Ix/Iy)
+## ============================================================
+
+dat <- read_csv(in_path, show_col_types = FALSE) %>%
+  mutate(.source_file = "All", .csv_row = row_number())
+
+## Clean column names and common variants
+names(dat) <- trimws(names(dat))
+names(dat) <- gsub("Ix/Iy", "IxIy", names(dat))
+
+stopifnot(all(c("Group","Side","Sex") %in% names(dat)))
+
+## ============================================================
+## HARD CLEAN Sex / Side / Group (prevents SexSide=NA)
+## ============================================================
+
+dat <- dat %>%
+  mutate(
+    Group = trimws(as.character(Group)),
+    Side  = trimws(as.character(Side)),
+    Sex   = trimws(as.character(Sex))
+  ) %>%
+  mutate(
+    ## Group
+    Group = case_when(
+      is.na(Group) | Group == "" ~ "None",
+      tolower(Group) %in% c("none","no pendant","nopendant") ~ "None",
+      tolower(Group) %in% c("pendant","pendants") ~ "Pendant",
+      TRUE ~ Group
+    ),
+    ## Side
+    Side = case_when(
+      tolower(Side) %in% c("l","left","lt")   ~ "Left",
+      tolower(Side) %in% c("r","right","rt")  ~ "Right",
+      TRUE ~ Side
+    ),
+    ## Sex
+    Sex = case_when(
+      tolower(Sex) %in% c("f","female","fem") ~ "Female",
+      tolower(Sex) %in% c("m","male","masc")  ~ "Male",
+      TRUE ~ Sex
+    )
+  )
+
+## DIAGNOSTIC A: any rows with unrecognized Sex/Side/Group
+bad_key <- dat %>%
+  filter(!(Sex %in% c("Female","Male")) | !(Side %in% c("Left","Right")) | !(Group %in% c("None","Pendant"))) %>%
+  select(.csv_row, Sex, Side, Group)
+
+if (nrow(bad_key) > 0) {
+  message("============================================================")
+  message("BAD Sex/Side/Group VALUES FOUND (these can create SexSide=NA):")
+  print(bad_key, n = min(200, nrow(bad_key)))
+  message("============================================================")
+}
+
+## ============================================================
+## Identify non-numeric cells (e.g., 'N/A') BEFORE numeric conversion
+## ============================================================
+
+vars <- setdiff(names(dat), c("Group","Side","Sex",".source_file",".csv_row"))
+
+raw_long <- dat %>%
+  pivot_longer(cols = all_of(vars), names_to = "Variable", values_to = "Raw") %>%
+  mutate(
+    Raw_chr = trimws(as.character(Raw)),
+    Num     = suppressWarnings(as.numeric(Raw_chr))
+  )
+
+problems <- raw_long %>%
+  filter(!is.na(Raw_chr) & Raw_chr != "" & is.na(Num)) %>%
+  transmute(csv_row = .csv_row, Sex, Side, Group, Variable, bad_value = Raw_chr)
+
+if (nrow(problems) > 0) {
+  message("============================================================")
+  message("NON-NUMERIC CELLS FOUND (these will coerce to NA):")
+  print(problems, n = min(200, nrow(problems)))
+  message("============================================================")
+}
+
+## Convert numeric columns
+dat[vars] <- lapply(dat[vars], function(x) suppressWarnings(as.numeric(x)))
+
+## ============================================================
+## Posterior draws (Option A: n=1 collapses CrI to a point)
+## ============================================================
+
+posterior_mu_draws <- function(y, n_draws = 4000) {
+  y <- y[is.finite(y)]
+  n <- length(y)
+
+  if (n == 0) return(rep(NA_real_, n_draws))
+  if (n == 1) return(rep(y[1], n_draws))  # Option A
+
+  ybar <- mean(y)
+  s2   <- var(y)
+
+  kappa0 <- 0.001
+  alpha0 <- 0.001
+  beta0  <- max(s2, 1e-8) * 0.001
+
+  kappa_n <- kappa0 + n
+  mu_n    <- ybar
+  alpha_n <- alpha0 + n/2
+  beta_n  <- beta0 + 0.5 * (n - 1) * s2
+
+  sig2 <- 1 / rgamma(n_draws, shape = alpha_n, rate = beta_n)
+  rnorm(n_draws, mean = mu_n, sd = sqrt(sig2 / kappa_n))
+}
+
+set.seed(1)
+N_DRAWS <- 4000
+
+long <- dat %>%
+  pivot_longer(cols = all_of(vars), names_to = "Variable", values_to = "Value") %>%
+  filter(is.finite(Value))
+
+## DIAGNOSTIC B: cells with n<2 (n=1 plots as point; n=0 absent)
+cell_counts <- long %>%
+  group_by(Sex, Side, Group, Variable) %>%
+  summarize(n_finite = n(), .groups = "drop") %>%
+  arrange(Sex, Side, Group, Variable)
+
+bad_cells <- cell_counts %>% filter(n_finite < 2)
+if (nrow(bad_cells) > 0) {
+  message("============================================================")
+  message("CELLS WITH n<2 (n=1 plots as point; n=0 is absent):")
+  print(bad_cells, n = nrow(bad_cells))
+  message("============================================================")
+}
+
+summ <- long %>%
+  group_by(Sex, Side, Group, Variable) %>%
+  summarize(mu_draw = list(posterior_mu_draws(Value, N_DRAWS)), .groups = "drop") %>%
+  mutate(
+    mean  = sapply(mu_draw, mean, na.rm = TRUE),
+    lower = sapply(mu_draw, quantile, probs = 0.025, na.rm = TRUE),
+    upper = sapply(mu_draw, quantile, probs = 0.975, na.rm = TRUE)
+  ) %>%
+  select(Sex, Side, Group, Variable, mean, lower, upper) %>%
+  filter(is.finite(mean), is.finite(lower), is.finite(upper))  # drops n=0 cleanly
+
+## Factor ordering
+summ$Sex   <- factor(summ$Sex,  levels = c("Female", "Male"))
+summ$Side  <- factor(summ$Side, levels = c("Left", "Right"))
+summ$Group <- fct_relevel(as.factor(summ$Group), "None", "Pendant")
+
+## Build SexSide; drop any NA (prevents "NA" x tick)
+summ <- summ %>%
+  mutate(
+    SexSide = interaction(Sex, Side, sep = " - ", drop = TRUE),
+    SexSide = factor(SexSide, levels = c("Female - Left","Female - Right","Male - Left","Male - Right"))
+  ) %>%
+  filter(!is.na(SexSide))
+
+## ============================================================
+## Panels
+## IMPORTANT:
+## - NO TITLES
+## - X-axis labels removed (but x positions remain)
+## - KEEP y-axis ticks + numbers
+## ============================================================
+
+make_panel <- function(v) {
+  df <- summ %>% filter(Variable == v)
+  dodge <- position_dodge(width = 0.32)
+
+  ggplot(df, aes(x = SexSide, y = mean)) +
+    geom_errorbar(
+      aes(ymin = lower, ymax = upper, color = Group),
+      position = dodge,
+      width = 0.10,
+      linewidth = 0.9
+    ) +
+    geom_point(
+      aes(group = Group),
+      position = dodge,
+      size = 2.5,
+      color = "black"
+    ) +
+    labs(x = NULL, y = NULL) +
+    theme_classic(base_size = 11) +
+    theme(
+      axis.line   = element_line(linewidth = 0.6),
+      axis.ticks  = element_line(linewidth = 0.6),
+      axis.text.x = element_blank(),      # remove Female/Male/Side labels
+      axis.text.y = element_text(size = 10), # keep y numbers
+      axis.title  = element_blank(),
+      plot.margin = margin(6, 10, 6, 6),
+      legend.position = "none"
+    )
+}
+
+p_TA   <- make_panel("TA")
+p_CA   <- make_panel("CA")
+p_MA   <- make_panel("MA")
+p_Ix   <- make_panel("Ix")
+p_Iy   <- make_panel("Iy")
+p_J    <- make_panel("J")
+p_IxIy <- make_panel("IxIy")
+
+## ============================================================
+## Dedicated LEGEND PANEL (single legend; no overlap)
+## ============================================================
+
+legend_plot <- ggplot(
+  summ %>% filter(Variable == "TA"),
+  aes(x = SexSide, y = mean, color = Group)
+) +
+  geom_point(size = 2.6) +
+  labs(color = NULL) +
+  theme_void(base_size = 12) +
+  theme(
+    legend.position = "left",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 11),
+    legend.key = element_blank()
+  )
+
+legend_g <- patchwork::wrap_elements(full = cowplot::get_legend(legend_plot))
+
+legend_panel <- ggplot() +
+  theme_void() +
+  inset_element(legend_g, left = 0.15, right = 0.95, bottom = 0.30, top = 0.70)
+
+## ============================================================
+## Layout (vertical): 4 rows × 2 columns
+## ============================================================
+
+fig <- (p_TA | p_CA) /
+       (p_MA | p_Ix) /
+       (p_Iy | p_J) /
+       (p_IxIy | legend_panel)
+
+## ============================================================
+## Save PNG
+## ============================================================
+
+ggsave(out_png, fig, width = 8.5, height = 11, units = "in", dpi = 600)
+
+print(fig)
+message("Saved: ", out_png)
+
+## ============================================================
+## ORDER this is the ordering of data, for Photoshop edits, I don't mess with the labeling; it's annoying
+## ============================================================
+
+message("PANEL ORDER (top→bottom, left→right):")
+message("Row 1: TA (left) | CA (right)")
+message("Row 2: MA (left) | Ix (right)")
+message("Row 3: Iy (left) | J  (right)")
+message("Row 4: Ix/Iy (left) | Legend (right)")
+
+message("X POSITIONS kept (labels removed), left→right within each panel:")
+message("Female-Left, Female-Right, Male-Left, Male-Right")
+message("Within each position: None vs Pendant are dodged (two colored intervals/points).")
+message("Option A applied: any n=1 cell plots as a point with collapsed CrI.")
