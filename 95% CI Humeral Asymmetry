@@ -2,8 +2,7 @@
 ## 95% Credible intervals for humeral directional asymmetry
 ## Bayesian 95% credible intervals (posterior mean dot + CrI bars)
 ## By Sex (x-axis) and Pendant/None group (color)
-## SAME LAYOUT AS YOUR ORIGINAL t-INTERVAL VERSION
-## 600 dpi vertical Science Advances page
+## 600 dpi output
 ## ============================================================
 
 library(dplyr)
@@ -14,7 +13,7 @@ library(patchwork)
 library(cowplot)
 
 ## ============================================================
-## Paths  (HARD-WIRED — your real directory)
+## Paths  
 ## ============================================================
 
 base_dir <- "C:whatever you use"
@@ -97,14 +96,14 @@ summ <- long %>%
   filter(is.finite(mean), is.finite(lower), is.finite(upper))
 
 ## ============================================================
-## Variable order (same as before)
+## Variable order 
 ## ============================================================
 
 var_order <- c("TA","CA","Ix","Iy","J")
 summ$Variable <- factor(summ$Variable, levels = var_order)
 
 ## ============================================================
-## Panel function (identical layout/style)
+## Panel function 
 ## ============================================================
 
 make_panel <- function(v){
@@ -148,7 +147,7 @@ leg_plot <- ggplot(summ, aes(Sex, mean, color = Group)) +
 legend_panel <- wrap_elements(full = cowplot::get_legend(leg_plot))
 
 ## ============================================================
-## Layout (same structure as your original)
+## Layout 
 ## ============================================================
 
 n <- length(plots)
@@ -162,7 +161,7 @@ if (n %% 2 == 1){
 fig <- wrap_plots(plots, ncol = 2)
 
 ## ============================================================
-## Save vertical journal page (Science Advances ready)
+## Save vertical journal page
 ## ============================================================
 
 ggsave(out_png, fig, width = 8.5, height = 11, units = "in", dpi = 600)
