@@ -1,7 +1,9 @@
 ## ============================================================
-## 95% Credibility intervals for humeral directional asymmetry
-## Mean ± 95% t-intervals (SPSS-style)
+## 95% Credible intervals for humeral directional asymmetry
+## Bayesian 95% credible intervals (posterior mean dot + CrI bars)
 ## By Sex (x-axis) and Pendant/None group (color)
+## SAME LAYOUT AS YOUR ORIGINAL t-INTERVAL VERSION
+## 600 dpi vertical Science Advances page
 ## ============================================================
 
 library(dplyr)
@@ -12,130 +14,158 @@ library(patchwork)
 library(cowplot)
 
 ## ============================================================
-## Paths
+## Paths  (HARD-WIRED — your real directory)
 ## ============================================================
 
-base_dir <- "C:/Whatever you use"
+base_dir <- "C:whatever you use"
 
 in_path  <- file.path(base_dir, "Humeri Asymmetry Pendant.csv")
-out_png  <- file.path(base_dir, "Asymmetry_BySex_ByGroup_tIntervals.png")
-# in_path <- "/mnt/data/Asymmetry.csv"
+out_png  <- file.path(base_dir, "Asymmetry_BySex_ByGroup_BayesianCrI.png")
 
 ## ============================================================
 ## Read + clean
 ## ============================================================
 
 dat <- read_csv(in_path, show_col_types = FALSE)
-
 names(dat) <- trimws(names(dat))
 
 dat <- dat %>%
-  mutate(
-    Sex   = factor(trimws(Sex),   levels = c("Female","Male")),
-    Group = factor(trimws(Group), levels = c("None","Pendant"))
-  )
+  mutate(
+    Sex   = factor(trimws(as.character(Sex)),   levels = c("Female","Male")),
+    Group = factor(trimws(as.character(Group)), levels = c("None","Pendant"))
+  )
 
 vars <- setdiff(names(dat), c("Sex","Group"))
-dat[vars] <- lapply(dat[vars], as.numeric)
+dat[vars] <- lapply(dat[vars], function(x) suppressWarnings(as.numeric(x)))
 
 ## ============================================================
 ## Long format
 ## ============================================================
 
 long <- dat %>%
-  pivot_longer(cols = all_of(vars),
-               names_to = "Variable",
-               values_to = "Value") %>%
-  filter(is.finite(Value))
+  pivot_longer(cols = all_of(vars),
+               names_to = "Variable",
+               values_to = "Value") %>%
+  filter(is.finite(Value))
 
 ## ============================================================
-## SPSS-style t intervals
-## Robust to n=1 (dot only)
+## Bayesian posterior mean sampler
+## Option A: n=1 collapses CrI to a point
 ## ============================================================
+
+posterior_mu_draws <- function(y, n_draws = 4000) {
+
+  y <- y[is.finite(y)]
+  n <- length(y)
+
+  if (n == 0) return(rep(NA_real_, n_draws))
+  if (n == 1) return(rep(y[1], n_draws))   # collapse to point
+
+  ybar <- mean(y)
+  s2   <- var(y)
+
+  ## weak priors (same as your earlier Bayesian scripts)
+  kappa0 <- 0.001
+  alpha0 <- 0.001
+  beta0  <- max(s2, 1e-8) * 0.001
+
+  kappa_n <- kappa0 + n
+  mu_n    <- ybar
+  alpha_n <- alpha0 + n/2
+  beta_n  <- beta0 + 0.5*(n-1)*s2
+
+  sig2 <- 1 / rgamma(n_draws, shape = alpha_n, rate = beta_n)
+
+  rnorm(n_draws, mean = mu_n, sd = sqrt(sig2 / kappa_n))
+}
+
+set.seed(1)
+N_DRAWS <- 4000
 
 summ <- long %>%
-  group_by(Sex, Group, Variable) %>%
-  summarize(
-    n    = n(),
-    mean = mean(Value),
-    sd   = sd(Value),
-    se   = sd/sqrt(n),
-    tcrit = ifelse(n >= 2, qt(.975, df=n-1), NA_real_),
-    lower = ifelse(n >= 2, mean - tcrit*se, mean),
-    upper = ifelse(n >= 2, mean + tcrit*se, mean),
-    .groups="drop"
-  )
+  group_by(Sex, Group, Variable) %>%
+  summarize(
+    mu_draw = list(posterior_mu_draws(Value, N_DRAWS)),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    mean  = sapply(mu_draw, mean, na.rm = TRUE),
+    lower = sapply(mu_draw, quantile, 0.025, na.rm = TRUE),
+    upper = sapply(mu_draw, quantile, 0.975, na.rm = TRUE)
+  ) %>%
+  select(Sex, Group, Variable, mean, lower, upper) %>%
+  filter(is.finite(mean), is.finite(lower), is.finite(upper))
 
 ## ============================================================
-## Force requested order
+## Variable order (same as before)
 ## ============================================================
 
 var_order <- c("TA","CA","Ix","Iy","J")
 summ$Variable <- factor(summ$Variable, levels = var_order)
 
 ## ============================================================
-## Panel function (ONLY dots + CI bars keep it simple, see below)
+## Panel function (identical layout/style)
 ## ============================================================
 
 make_panel <- function(v){
 
-  df <- summ %>% filter(Variable == v)
-  dodge <- position_dodge(width = 0.30)
+  df <- summ %>% filter(Variable == v)
+  dodge <- position_dodge(width = 0.30)
 
-  ggplot(df, aes(Sex, mean)) +
-    geom_errorbar(
-      aes(ymin = lower, ymax = upper, color = Group),
-      position = dodge,
-      width = 0.18,
-      linewidth = 1.2
-    ) +
-    geom_point(
-      aes(group = Group),
-      position = dodge,
-      size = 2.8,
-      color = "black"
-    ) +
-    labs(x=NULL, y=v, color="Mortuary group") +
-    theme_classic(base_size = 11) +
-    theme(
-      legend.position="none",
-      axis.title = element_text(face="bold"),
-      plot.margin = margin(8,10,8,6)
-    )
+  ggplot(df, aes(Sex, mean)) +
+    geom_errorbar(
+      aes(ymin = lower, ymax = upper, color = Group),
+      position = dodge,
+      width = 0.18,
+      linewidth = 1.2
+    ) +
+    geom_point(
+      aes(group = Group),
+      position = dodge,
+      size = 2.8,
+      color = "black"
+    ) +
+    labs(x = NULL, y = v, color = "Mortuary group") +
+    theme_classic(base_size = 11) +
+    theme(
+      legend.position = "none",
+      axis.title = element_text(face = "bold"),
+      plot.margin = margin(8,10,8,6)
+    )
 }
 
 plots <- lapply(var_order, make_panel)
 
 ## ============================================================
-## Legend panel (you can use this, but edit it out with photo shop, again I find the font/size/positioning annoying, still learning)
+## Legend panel
 ## ============================================================
 
-leg_plot <- ggplot(summ, aes(Sex, mean, color=Group)) +
-  geom_point() +
-  theme_void() +
-  labs(color="Mortuary group")
+leg_plot <- ggplot(summ, aes(Sex, mean, color = Group)) +
+  geom_point() +
+  theme_void() +
+  labs(color = "Mortuary group")
 
 legend_panel <- wrap_elements(full = cowplot::get_legend(leg_plot))
 
 ## ============================================================
-## Layout (2 panels per row + legend at end)
+## Layout (same structure as your original)
 ## ============================================================
 
 n <- length(plots)
 
 if (n %% 2 == 1){
-  plots[[n+1]] <- legend_panel
+  plots[[n + 1]] <- legend_panel
 } else {
-  plots[[n]] <- plots[[n]] | legend_panel
+  plots[[n]] <- plots[[n]] | legend_panel
 }
 
 fig <- wrap_plots(plots, ncol = 2)
 
 ## ============================================================
-## Save vertical journal page
+## Save vertical journal page (Science Advances ready)
 ## ============================================================
 
-ggsave(out_png, fig, width=8.5, height=11, units="in", dpi=600)
+ggsave(out_png, fig, width = 8.5, height = 11, units = "in", dpi = 600)
 
 print(fig)
 message("Saved: ", out_png)
