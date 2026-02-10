@@ -1,301 +1,191 @@
 ## ============================================================
-## Randomized comparisons of femoral properties, both sexes, all groups
-## Zvejnieki vs other groups — Sex overlay permutation comparisons
-## ALL-IN-ONE FIGURE (vertical / journal page style)
-## NO labels (I've been annoyed trying to get the fonts right and not run into other shit) -> BIGGER PANELS
-##
-## INPUT:
-##   Femora All.csv with columns: Group, Sex, Ix, Iy, J, IxIy
-##
-## OUTPUT:
-##   <base_dir>/Zvejnieki_SexOverlay_Permutations/Zvejnieki_SexOverlay_ALL_NoLabels_<timestamp>.png
-##
-## ROPE:
-##   - Ix, Iy, J:  10% of |mean(Zvejnieki)| within that sex
-##   - IxIy:       3% of |mean(Zvejnieki)| within that sex
-##
-## Base R only.
+## Femoral 95% credibility intervals for all groups, both sexes
+## Femora: Group × Sex (Female vs Male)
+## Bayesian 95% credible intervals (mean dot + CI bars)
+## Layout requirement: J and IxIy on same row
+## Legend in blank space to the right of IxIy
+## Vertical PNG @ 600 dpi
 ## ============================================================
 
-## ---------------------------
-## FIXED PATHS
-## ---------------------------
-base_dir  <- "C:Whatever you use"
-data_file <- file.path(base_dir, "Femora All.csv")
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(readr)
 
-out_dir <- file.path(base_dir, "Zvejnieki_SexOverlay_Permutations")
-if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+if (!requireNamespace("patchwork", quietly = TRUE)) install.packages("patchwork")
+if (!requireNamespace("forcats", quietly = TRUE)) install.packages("forcats")
+library(patchwork)
+library(forcats)
 
-## ---------------------------
-## SETTINGS
-## ---------------------------
-group_col_guess <- "Group"
-sex_col_guess   <- "Sex"
-zvej_label <- "Zvejnieki"
+## ---- BASE DIRECTORY ----
+base_dir <- "C:Whatever you use"
 
-vars <- c("Ix", "Iy", "J", "IxIy")
+in_path  <- file.path(base_dir, "Femora All.csv")
+out_png  <- file.path(base_dir, "Femora_GroupBySex_CrI_Vertical_J_IxIy_SameRow.png")
 
-iter <- 10000
-n_bins <- 18
+## ============================================================
+## Read + standardize
+## ============================================================
 
-dpi <- 600
-width_in  <- 7.25
-height_in <- 10.5
+dat_raw <- read_csv(in_path, show_col_types = FALSE)
 
-## ROPE parameters
-p_area  <- 0.05
-p_moi   <- 0.10
-p_ratio <- 0.03
+names(dat_raw) <- trimws(names(dat_raw))
+names(dat_raw) <- gsub("^Ix\\s*/\\s*Iy$", "IxIy", names(dat_raw))
 
-## appearance
-female_fill   <- rgb(.35, .35, .35, .55)
-female_border <- rgb(.35, .35, .35, .75)
+stopifnot(all(c("Group", "Sex") %in% names(dat_raw)))
 
-male_fill     <- rgb(.35, .35, .35, .25)
-male_border   <- rgb(.35, .35, .35, .40)
+dat <- dat_raw %>%
+  mutate(
+    Group = as.factor(Group),
+    Sex   = as.factor(Sex)
+  )
 
-## ROPE line styles
-female_rope_lty <- 2  # dashed
-male_rope_lty   <- 1  # solid
-rope_col_female <- "gray25"
-rope_col_male   <- "gray10"
-rope_lwd        <- 1.3
+## Enforce Sex order: Female then Male (handles common variants)
+dat$Sex <- fct_recode(dat$Sex,
+                      Female = "F", Female = "f", Female = "female", Female = "FEMALE",
+                      Male   = "M", Male   = "m", Male   = "male",   Male   = "MALE")
+dat$Sex <- factor(dat$Sex, levels = c("Female", "Male"))
 
-## markers
-ball_col <- "black"
-ball_cex <- 0.95
+vars <- setdiff(names(dat), c("Group", "Sex"))
+dat[vars] <- lapply(dat[vars], function(x) suppressWarnings(as.numeric(x)))
 
-arrow_len   <- 0.14
-arrow_angle <- 22
-arrow_col   <- "black"
-arrow_lwd   <- 1.2
+## ============================================================
+## Bayesian posterior mean sampler
+## ============================================================
 
-## typography
-cex_axis <- 0.70
+rinvgamma <- function(n, shape, rate) 1 / rgamma(n, shape = shape, rate = rate)
 
-## panel margins (more plot area now)
-mar_panel <- c(1.6, 1.8, 0.4, 0.4)  # bottom, left, top, right
-oma_page  <- c(0.2, 0.2, 0.2, 0.2)
+posterior_mu_draws <- function(y, n_draws = 4000) {
+  y <- y[is.finite(y)]
+  n <- length(y)
+  if (n < 2) return(rep(NA_real_, n_draws))
 
-## ---------------------------
-## FAIL-FAST FILE CHECK
-## ---------------------------
-if (!file.exists(data_file)) {
-  stop(paste0("Cannot find input file:\n  ", data_file,
-              "\n\nTry:\n  list.files('", base_dir, "')\n"))
+  ybar <- mean(y)
+  s2   <- var(y)
+
+  kappa0 <- 0.001
+  alpha0 <- 0.001
+  beta0  <- max(s2, 1e-8) * 0.001
+
+  kappa_n <- kappa0 + n
+  mu_n    <- ybar
+  alpha_n <- alpha0 + n/2
+  beta_n  <- beta0 + 0.5 * (n - 1) * s2
+
+  sig2 <- rinvgamma(n_draws, alpha_n, beta_n)
+  rnorm(n_draws, mean = mu_n, sd = sqrt(sig2 / kappa_n))
 }
 
-## ---------------------------
-## LOAD DATA
-## ---------------------------
-dat <- read.csv(data_file, check.names = FALSE, stringsAsFactors = FALSE)
-names(dat) <- trimws(names(dat))
+set.seed(1)
+N_DRAWS <- 4000
 
-## ---------------------------
-## AUTO-DETECT Group/Sex columns robustly
-## ---------------------------
-norm <- tolower(gsub("[^a-z0-9]+", "", names(dat)))
+long <- dat %>%
+  pivot_longer(cols = all_of(vars),
+               names_to = "Variable",
+               values_to = "Value") %>%
+  filter(is.finite(Value))
 
-## group
-group_col <- group_col_guess
-if (!(group_col %in% names(dat))) {
-  idx_g <- which(norm %in% c("group","time","timeperiod","period","phase"))
-  if (length(idx_g) == 0) stop("Could not find Group column.")
-  group_col <- names(dat)[idx_g[1]]
+summ <- long %>%
+  group_by(Sex, Group, Variable) %>%
+  summarize(
+    mu_draw = list(posterior_mu_draws(Value, N_DRAWS)),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    mean  = sapply(mu_draw, mean, na.rm = TRUE),
+    lower = sapply(mu_draw, quantile, probs = 0.025, na.rm = TRUE),
+    upper = sapply(mu_draw, quantile, probs = 0.975, na.rm = TRUE)
+  ) %>%
+  select(Sex, Group, Variable, mean, lower, upper)
+
+## Group order if Pendant/None exist
+if (all(c("None", "Pendant") %in% levels(as.factor(summ$Group)))) {
+  summ$Group <- fct_relevel(as.factor(summ$Group), "None", "Pendant")
+} else {
+  summ$Group <- as.factor(summ$Group)
 }
 
-## sex
-sex_col <- sex_col_guess
-if (!(sex_col %in% names(dat))) {
-  idx_s <- which(norm %in% c("sex","gender","biologicalsex","sexmf"))
-  if (length(idx_s) == 0) idx_s <- which(grepl("sex", norm) | grepl("gender", norm))
-  if (length(idx_s) == 0) stop("Could not find a sex column.")
-  sex_col <- names(dat)[idx_s[1]]
+## ============================================================
+## Panel function (no legends inside; I add them in photoshop because I got frustrated trying to make them large and not run into stuff)
+## ============================================================
+
+make_panel <- function(v) {
+  df <- summ %>% filter(Variable == v)
+  dodge <- position_dodge(width = 0.30)
+
+  ggplot(df, aes(x = Sex, y = mean)) +
+    geom_errorbar(
+      aes(ymin = lower, ymax = upper, color = Group),
+      position = dodge, width = 0.10, linewidth = 0.9
+    ) +
+    geom_point(
+      aes(group = Group),
+      position = dodge, size = 2.5, color = "black"
+    ) +
+    labs(x = NULL, y = v, color = "Group") +
+    theme_classic(base_size = 11) +
+    theme(
+      axis.line  = element_line(linewidth = 0.6),
+      axis.ticks = element_line(linewidth = 0.6),
+      axis.text  = element_text(size = 10),
+      axis.title = element_text(size = 11, face = "bold"),
+      plot.margin = margin(6, 10, 6, 6),
+      legend.position = "none"
+    )
 }
 
-## Normalize values
-dat[[group_col]] <- trimws(as.character(dat[[group_col]]))
-dat[[sex_col]]   <- tolower(trimws(as.character(dat[[sex_col]])))
+## Make the four required panels
+p_Ix   <- make_panel("Ix")
+p_Iy   <- make_panel("Iy")
+p_J    <- make_panel("J")
+p_IxIy <- make_panel("IxIy")
 
-dat[[sex_col]][dat[[sex_col]] %in% c("m","male","man")]      <- "male"
-dat[[sex_col]][dat[[sex_col]] %in% c("f","female","woman")]  <- "female"
+## ============================================================
+## Legend panel (blank space next to IxIy; same as above)
+## ============================================================
 
-dat <- dat[dat[[sex_col]] %in% c("male","female"), , drop = FALSE]
-if (nrow(dat) == 0) stop("After normalizing sex, no rows remain with sex == male/female.")
+legend_plot <- ggplot(
+  summ %>% filter(Variable == "Ix"),
+  aes(x = Sex, y = mean, color = Group)
+) +
+  geom_point(size = 2.6) +
+  labs(color = "Group") +
+  theme_void(base_size = 12) +
+  theme(
+    legend.position = "left",
+    legend.title = element_text(face = "bold"),
+    legend.text = element_text(size = 11),
+    legend.key = element_blank()
+  )
 
-## Keep vars that exist + numeric
-vars <- vars[vars %in% names(dat)]
-if (length(vars) == 0) stop("None of Ix/Iy/J/IxIy were found as columns in the file.")
-for (v in vars) dat[[v]] <- suppressWarnings(as.numeric(dat[[v]]))
+legend_g <- patchwork::wrap_elements(full = patchwork::get_legend(legend_plot))
 
-groups <- sort(unique(dat[[group_col]]))
-if (!(zvej_label %in% groups)) {
-  stop(paste0("Zvejnieki label not found in Group column (expected '", zvej_label, "')."))
-}
-comp_groups_all <- setdiff(groups, zvej_label)
-if (length(comp_groups_all) == 0) stop("No comparison groups found (only Zvejnieki is present).")
+legend_panel <- ggplot() + theme_void()
+legend_panel <- legend_panel +
+  inset_element(
+    legend_g,
+    left = 0.15, right = 0.95,
+    bottom = 0.30, top = 0.70
+  )
 
-## Use first 4 comparison groups (or all if exactly 4)
-comp_groups <- comp_groups_all
-if (length(comp_groups) > 4) comp_groups <- comp_groups[1:4]
+## ============================================================
+## Layout:
+##   Row1: Ix   | Iy
+##   Row2: J    | IxIy
+##   Row3: (blank) | legend  [optional; keeping legend next to IxIy is cleaner]
+## Here: put legend to the RIGHT of IxIy on the SAME ROW by nesting
+## ============================================================
 
-nR <- length(comp_groups)
-nC <- length(vars)
+row1 <- p_Ix | p_Iy
+row2 <- p_J  | (p_IxIy | legend_panel) + plot_layout(widths = c(2, 1))
 
-## ---------------------------
-## Helpers: ROPE
-## ---------------------------
-class_of <- function(varname) {
-  if (varname %in% c("TA","CA","MA")) return("area")
-  if (varname %in% c("Ix","Iy","J"))  return("moi")
-  if (varname %in% c("IxIy"))         return("ratio")
-  "other"
-}
-p_for_class <- function(cls) {
-  if (cls == "area")  return(p_area)
-  if (cls == "moi")   return(p_moi)
-  if (cls == "ratio") return(p_ratio)
-  0.05
-}
-rope_for_sex <- function(varname, dat_sex, group_col, value_col, zvej_label) {
-  cls <- class_of(varname)
-  p <- p_for_class(cls)
-  ref_vals <- dat_sex[[value_col]][dat_sex[[group_col]] == zvej_label]
-  ref <- mean(ref_vals, na.rm = TRUE)
-  if (!is.finite(ref)) return(NA_real_)
-  p * abs(ref)
-}
+fig <- row1 / row2
 
-## ---------------------------
-## Permutation (two-group, within-sex)
-## Δ = mean(A) - mean(B)  where A = Zvejnieki, B = GroupX
-## ---------------------------
-perm_two_groups_AminusB <- function(y, g, A, B, iter, seed) {
-  set.seed(seed)
-  keep <- is.finite(y) & (g %in% c(A, B))
-  y <- y[keep]
-  g <- g[keep]
+## ============================================================
+## Save vertical PNG
+## ============================================================
 
-  nA <- sum(g == A)
-  nB <- sum(g == B)
-  if (nA < 2 || nB < 2) return(list(ok=FALSE, nA=nA, nB=nB, obs=NA_real_, diff=NA_real_))
+ggsave(out_png, fig, width = 8.5, height = 11, units = "in", dpi = 600)
 
-  ## Δ = mean(A) - mean(B)
-  obs <- mean(y[g == A]) - mean(y[g == B])
-
-  diff <- numeric(iter)
-  for (i in 1:iter) {
-    gp <- sample(g, replace = FALSE)
-    diff[i] <- mean(y[gp == A]) - mean(y[gp == B])
-  }
-  list(ok=TRUE, nA=nA, nB=nB, obs=obs, diff=diff)
-}
-
-## ---------------------------
-## Drawing helpers
-## ---------------------------
-draw_hist <- function(h, fill, border) {
-  for (i in seq_along(h$counts)) {
-    rect(h$breaks[i], 0, h$breaks[i + 1], h$counts[i],
-         col = fill, border = border)
-  }
-}
-ball_marker <- function(h, obs, ymax) {
-  idx <- findInterval(obs, h$breaks, rightmost.closed = TRUE)
-  idx <- max(1, min(idx, length(h$counts)))
-  y <- min(h$counts[idx] + 0.06 * ymax, ymax * 0.95)
-  points(obs, y, pch = 16, col = ball_col, cex = ball_cex)
-}
-arrow_marker <- function(h, obs, ymax) {
-  idx <- findInterval(obs, h$breaks, rightmost.closed = TRUE)
-  idx <- max(1, min(idx, length(h$counts)))
-  bh <- h$counts[idx]
-  if (!is.finite(bh)) bh <- 0
-
-  y_head <- min(bh + 0.06 * ymax, ymax * 0.90)
-  y_tail <- min(y_head + 0.18 * ymax, ymax * 0.98)
-  if (y_tail <= y_head + 0.5) y_tail <- min(y_head + 1.0, ymax * 0.99)
-
-  old_xpd <- par("xpd"); par(xpd = NA)
-  arrows(x0 = obs, y0 = y_tail, x1 = obs, y1 = y_head,
-         length = arrow_len, angle = arrow_angle,
-         lwd = arrow_lwd, col = arrow_col, code = 2)
-  par(xpd = old_xpd)
-}
-
-## ---------------------------
-## OUTPUT
-## ---------------------------
-timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
-png_file <- file.path(out_dir, paste0("Zvejnieki_SexOverlay_ALL_NoLabels_", timestamp, ".png"))
-
-png(png_file, width = width_in, height = height_in, units = "in", res = dpi)
-op <- par(no.readonly = TRUE)
-on.exit(par(op), add = TRUE)
-
-par(mfrow = c(nR, nC), mar = mar_panel, oma = oma_page)
-
-for (rr in seq_along(comp_groups)) {
-  gB <- comp_groups[rr]
-
-  for (cc in seq_along(vars)) {
-    v <- vars[cc]
-
-    datF <- dat[dat[[sex_col]] == "female", , drop = FALSE]
-    datM <- dat[dat[[sex_col]] == "male",   , drop = FALSE]
-
-    yF <- datF[[v]]; gF <- datF[[group_col]]
-    yM <- datM[[v]]; gM <- datM[[group_col]]
-
-    outF <- perm_two_groups_AminusB(yF, gF, zvej_label, gB, iter = iter, seed = 1000 + rr*100 + cc)
-    outM <- perm_two_groups_AminusB(yM, gM, zvej_label, gB, iter = iter, seed = 2000 + rr*100 + cc)
-
-    if (!isTRUE(outF$ok) || !isTRUE(outM$ok)) {
-      plot.new()
-      text(0.5, 0.5, "insufficient n", cex = 0.9, font = 2)
-      next
-    }
-
-    ropeF <- rope_for_sex(v, datF, group_col, v, zvej_label)
-    ropeM <- rope_for_sex(v, datM, group_col, v, zvej_label)
-
-    brks <- pretty(c(outF$diff, outM$diff, outF$obs, outM$obs,
-                     if (is.finite(ropeF)) c(-ropeF, ropeF) else NULL,
-                     if (is.finite(ropeM)) c(-ropeM, ropeM) else NULL),
-                   n = n_bins)
-
-    hF <- hist(outF$diff, breaks = brks, plot = FALSE)
-    hM <- hist(outM$diff, breaks = brks, plot = FALSE)
-
-    ymax <- max(c(hF$counts, hM$counts), na.rm = TRUE) * 1.10
-    if (!is.finite(ymax) || ymax <= 0) ymax <- 1
-
-    plot(NA, xlim = range(brks), ylim = c(0, ymax),
-         xlab = "", ylab = "",
-         cex.axis = cex_axis, cex.lab = cex_axis)
-
-    ## Females behind (darker)
-    draw_hist(hF, female_fill, female_border)
-    ## Males overlaid (lighter)
-    draw_hist(hM, male_fill, male_border)
-
-    ## NOTE: Removed the vertical 0 line per your request
-
-    ## ROPE lines: females dashed, males solid
-    if (is.finite(ropeF) && ropeF > 0) {
-      abline(v = c(-ropeF, ropeF), lty = female_rope_lty, lwd = rope_lwd, col = rope_col_female)
-    }
-    if (is.finite(ropeM) && ropeM > 0) {
-      abline(v = c(-ropeM, ropeM), lty = male_rope_lty, lwd = rope_lwd, col = rope_col_male)
-    }
-
-    ## markers (anchored to bars)
-    ball_marker(hF, outF$obs, ymax)
-    arrow_marker(hM, outM$obs, ymax)
-  }
-}
-
-dev.off()
-
-cat("\nSaved:\n  ", png_file, "\n", sep = "")
-if (.Platform$OS.type == "windows") shell.exec(out_dir)
+print(fig)
+message("Saved: ", out_png)
